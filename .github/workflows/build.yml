@@ -39,12 +39,39 @@ jobs:
       - name: Verify single DEX
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          COUNT=$(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\\.dex$' | wc -l)
+
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK not found: $APK"
+            exit 1
+          fi
+
+          echo "Checking DEX files inside: $APK"
+
+          # Do not use a grep|wc pipeline here. The old check could report 0
+          # because grep returns exit code 1 when no line matches, making the
+          # verification step fail without showing the real APK contents.
+          mapfile -t DEX_FILES < <(
+            unzip -l "$APK" | awk '$4 ~ /^classes([0-9]+)?\.dex$/ { print $4 }'
+          )
+
+          COUNT="${#DEX_FILES[@]}"
           echo "DEX files: $COUNT"
-          unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\\.dex$' || true
-          test "$COUNT" -eq 1
+
+          if [ "$COUNT" -gt 0 ]; then
+            printf '%s\n' "${DEX_FILES[@]}"
+          fi
+
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::Expected exactly 1 DEX file, found $COUNT"
+            echo "All DEX-related APK entries:"
+            unzip -l "$APK" | grep -E 'classes([0-9]+)?\.dex$' || true
+            exit 1
+          fi
+
+          echo "Single DEX verification passed."
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
