@@ -5,14 +5,19 @@ import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.AssetManager;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.SurfaceTexture;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.view.Gravity;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -23,11 +28,11 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import android.widget.VideoView;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.util.Locale;
 
 public final class MIKASA {
 
@@ -65,6 +70,15 @@ public final class MIKASA {
         final Dialog dialog = new Dialog(activity);
 
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        // TextureView (video) needs hardware acceleration. Some modded host
+        // apps disable it, so force it on for the dialog window.
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setFlags(
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                    WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+            );
+        }
         dialog.setCancelable(false);
         dialog.setCanceledOnTouchOutside(false);
 
@@ -89,6 +103,7 @@ public final class MIKASA {
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
         card.setElevation(dp(activity, 10));
+        card.setClipToOutline(true);
 
         card.setBackground(
                 rounded(
@@ -121,7 +136,23 @@ public final class MIKASA {
         );
 
         // =========================
-        // IMAGE FALLBACK
+        // VIDEO (TextureView, sits under the cover image)
+        // =========================
+
+        final TextureView textureView = new TextureView(activity);
+
+        textureView.setAlpha(0f);
+
+        mediaFrame.addView(
+                textureView,
+                new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                )
+        );
+
+        // =========================
+        // IMAGE (cover + fallback, fades out when video renders)
         // =========================
 
         final ImageView imageView = new ImageView(activity);
@@ -150,26 +181,6 @@ public final class MIKASA {
                         ViewGroup.LayoutParams.MATCH_PARENT
                 )
         );
-
-        // =========================
-        // VIDEO
-        // =========================
-
-        final VideoView videoView = new VideoView(activity);
-
-        videoView.setBackgroundColor(
-                Color.rgb(37, 33, 31)
-        );
-
-        videoView.setVisibility(View.GONE);
-
-        FrameLayout.LayoutParams videoParams =
-                new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                );
-
-        mediaFrame.addView(videoView, videoParams);
 
         // =========================
         // ACCENT
@@ -443,14 +454,17 @@ public final class MIKASA {
         content.addView(footer, footerParams);
 
         // =========================================================
-        // FIXED VIDEO LOADER
+        // VIDEO LOADER
         // =========================================================
 
-        loadVideo(
-                activity,
-                videoView,
-                imageView
-        );
+        final VideoController video =
+                new VideoController(
+                        activity,
+                        textureView,
+                        imageView
+                );
+
+        video.start();
 
         // =========================
         // EXIT
@@ -459,6 +473,8 @@ public final class MIKASA {
         exitButton.setOnClickListener(v -> {
 
             press(v);
+
+            video.release();
 
             v.postDelayed(() -> {
 
@@ -490,10 +506,6 @@ public final class MIKASA {
 
                 openTelegram(activity);
 
-                if (videoView.isPlaying()) {
-                    videoView.stopPlayback();
-                }
-
                 dialog.dismiss();
 
             }, 120);
@@ -502,6 +514,8 @@ public final class MIKASA {
         // =========================
         // DIALOG
         // =========================
+
+        dialog.setOnDismissListener(d -> video.release());
 
         dialog.setContentView(root);
 
@@ -601,158 +615,405 @@ public final class MIKASA {
     }
 
     // =========================================================
-    // VIDEO LOADER
+    // VIDEO
     // =========================================================
 
-    private static void loadVideo(
-            final Activity activity,
-            final VideoView videoView,
-            final ImageView imageView
+    private static final String[] VIDEO_EXTENSIONS = {
+            ".mp4", ".m4v", ".mov", ".3gp", ".webm", ".mkv"
+    };
+
+    private static boolean isVideoName(String name) {
+
+        String n = name.toLowerCase(Locale.ROOT);
+
+        for (String ext : VIDEO_EXTENSIONS) {
+            if (n.endsWith(ext)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Finds the video inside assets. The exact name wlc_video.mp4 is tried
+     * first; if it is not there (for example the file was added with another
+     * name or inside a sub-folder using MT Manager) the first video file
+     * found in assets is used instead.
+     */
+    private static String findVideoAsset(
+            AssetManager assets,
+            String dir,
+            int depth
     ) {
 
+        if (dir.isEmpty()) {
+
+            try {
+                InputStream test = assets.open(VIDEO_NAME);
+                test.close();
+                return VIDEO_NAME;
+            } catch (Exception ignored) {
+            }
+        }
+
+        String[] items;
+
         try {
+            items = assets.list(dir);
+        } catch (Exception e) {
+            return null;
+        }
 
-            // Check asset exists
-            InputStream test =
-                    activity.getAssets().open(VIDEO_NAME);
+        if (items == null) {
+            return null;
+        }
 
-            test.close();
+        for (String item : items) {
 
-            // Copy asset to cache
-            final File videoFile =
-                    new File(
-                            activity.getCacheDir(),
-                            VIDEO_NAME
-                    );
+            String path = dir.isEmpty() ? item : dir + "/" + item;
 
-            copyAssetToFile(
-                    activity,
-                    VIDEO_NAME,
-                    videoFile
+            if (isVideoName(item)) {
+                return path;
+            }
+        }
+
+        if (depth > 0) {
+
+            for (String item : items) {
+
+                String path = dir.isEmpty() ? item : dir + "/" + item;
+
+                String found = findVideoAsset(assets, path, depth - 1);
+
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Plays the looping, muted welcome video on a TextureView.
+     *
+     * Why TextureView and not VideoView:
+     *  - VideoView is a SurfaceView. A SurfaceView that starts as GONE never
+     *    creates its surface, so the video never prepares and never shows.
+     *  - A SurfaceView also renders black / invisible inside animated,
+     *    scaled or clipped parents (this dialog card animates in).
+     *  TextureView works correctly with all of that.
+     */
+    private static final class VideoController
+            implements TextureView.SurfaceTextureListener {
+
+        private final Activity activity;
+        private final TextureView textureView;
+        private final ImageView cover;
+
+        private MediaPlayer player;
+        private Surface surface;
+
+        private volatile File videoFile;
+        private volatile boolean released;
+
+        private boolean shown;
+        private int videoWidth;
+        private int videoHeight;
+
+        VideoController(
+                Activity activity,
+                TextureView textureView,
+                ImageView cover
+        ) {
+            this.activity = activity;
+            this.textureView = textureView;
+            this.cover = cover;
+        }
+
+        void start() {
+
+            textureView.setSurfaceTextureListener(this);
+
+            textureView.addOnLayoutChangeListener(
+                    (v, l, t, r, b, ol, ot, or, ob) -> applyCenterCrop()
             );
 
-            // Make sure the file exists
-            if (!videoFile.exists()
-                    || videoFile.length() == 0) {
+            // Copy the video out of assets on a background thread
+            // so the dialog opens instantly.
+            new Thread(() -> {
 
+                File file = null;
+
+                try {
+                    file = copyVideoToCache();
+                } catch (Throwable ignored) {
+                }
+
+                final File result = file;
+
+                activity.runOnUiThread(() -> {
+
+                    if (released) {
+                        return;
+                    }
+
+                    if (result == null) {
+                        // No video in assets -> keep the image.
+                        return;
+                    }
+
+                    videoFile = result;
+                    tryPlay();
+                });
+
+            }, "mikasa-video-copy").start();
+        }
+
+        private File copyVideoToCache() throws Exception {
+
+            AssetManager assets = activity.getAssets();
+
+            String assetPath = findVideoAsset(assets, "", 2);
+
+            if (assetPath == null) {
+                return null;
+            }
+
+            File out = new File(activity.getCacheDir(), VIDEO_NAME);
+            File tmp = new File(activity.getCacheDir(), VIDEO_NAME + ".tmp");
+
+            InputStream input = assets.open(assetPath);
+            FileOutputStream output = new FileOutputStream(tmp);
+
+            try {
+                byte[] buffer = new byte[16384];
+                int length;
+
+                while ((length = input.read(buffer)) != -1) {
+                    output.write(buffer, 0, length);
+                }
+
+                output.flush();
+
+            } finally {
+                try { output.close(); } catch (Exception ignored) { }
+                try { input.close(); } catch (Exception ignored) { }
+            }
+
+            if (tmp.length() == 0) {
+                tmp.delete();
+                return null;
+            }
+
+            if (out.exists()) {
+                out.delete();
+            }
+
+            if (!tmp.renameTo(out)) {
+                return null;
+            }
+
+            return out;
+        }
+
+        private void tryPlay() {
+
+            if (released || player != null || videoFile == null) {
                 return;
             }
 
-            Uri videoUri =
-                    Uri.fromFile(videoFile);
+            if (!textureView.isAvailable()) {
+                return; // onSurfaceTextureAvailable will call us again
+            }
 
-            videoView.setVideoURI(videoUri);
+            SurfaceTexture texture = textureView.getSurfaceTexture();
 
-            videoView.setOnPreparedListener(
-                    new MediaPlayer.OnPreparedListener() {
+            if (texture == null) {
+                return;
+            }
 
-                        @Override
-                        public void onPrepared(
-                                MediaPlayer mp
-                        ) {
+            try {
 
-                            try {
+                surface = new Surface(texture);
 
-                                mp.setLooping(true);
+                MediaPlayer mp = new MediaPlayer();
 
-                                // Keep video muted
-                                mp.setVolume(
-                                        0f,
-                                        0f
-                                );
+                player = mp;
 
-                            } catch (Exception ignored) {
-                            }
+                mp.setSurface(surface);
+                mp.setDataSource(videoFile.getAbsolutePath());
+                mp.setLooping(true);
+                mp.setVolume(0f, 0f);
 
-                            imageView.setVisibility(
-                                    View.GONE
-                            );
+                mp.setOnVideoSizeChangedListener((m, w, h) -> {
+                    videoWidth = w;
+                    videoHeight = h;
+                    applyCenterCrop();
+                });
 
-                            videoView.setVisibility(
-                                    View.VISIBLE
-                            );
+                mp.setOnInfoListener((m, what, extra) -> {
 
-                            videoView.setAlpha(0f);
-                            videoView.setScaleX(1.05f);
-                            videoView.setScaleY(1.05f);
-
-                            videoView.animate()
-                                    .alpha(1f)
-                                    .scaleX(1.02f)
-                                    .scaleY(1.02f)
-                                    .setDuration(700)
-                                    .setInterpolator(
-                                            new DecelerateInterpolator()
-                                    )
-                                    .start();
-
-                            videoView.start();
-                        }
+                    if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                        showVideo();
                     }
-            );
 
-            videoView.setOnErrorListener(
-                    (mp, what, extra) -> {
+                    return false;
+                });
 
-                        videoView.stopPlayback();
+                mp.setOnPreparedListener(m -> {
 
-                        videoView.setVisibility(
-                                View.GONE
-                        );
-
-                        imageView.setVisibility(
-                                View.VISIBLE
-                        );
-
-                        return true;
+                    if (released || player != m) {
+                        return;
                     }
-            );
 
-        } catch (Exception e) {
+                    try {
+                        m.start();
+                    } catch (Exception e) {
+                        fallbackToImage();
+                    }
+                });
 
-            // Video not found / invalid
-            videoView.setVisibility(
-                    View.GONE
-            );
+                mp.setOnErrorListener((m, what, extra) -> {
+                    fallbackToImage();
+                    return true;
+                });
 
-            imageView.setVisibility(
-                    View.VISIBLE
-            );
-        }
-    }
+                mp.prepareAsync();
 
-    // =========================================================
-    // COPY ASSET
-    // =========================================================
-
-    private static void copyAssetToFile(
-            Context context,
-            String assetName,
-            File outputFile
-    ) throws Exception {
-
-        InputStream input =
-                context.getAssets().open(assetName);
-
-        FileOutputStream output =
-                new FileOutputStream(outputFile);
-
-        byte[] buffer = new byte[8192];
-
-        int length;
-
-        while ((length = input.read(buffer)) != -1) {
-
-            output.write(
-                    buffer,
-                    0,
-                    length
-            );
+            } catch (Exception e) {
+                fallbackToImage();
+            }
         }
 
-        output.flush();
-        output.close();
-        input.close();
+        private void showVideo() {
+
+            if (shown || released) {
+                return;
+            }
+
+            shown = true;
+
+            applyCenterCrop();
+
+            textureView.setScaleX(1.05f);
+            textureView.setScaleY(1.05f);
+
+            textureView.animate()
+                    .alpha(1f)
+                    .scaleX(1.02f)
+                    .scaleY(1.02f)
+                    .setDuration(700)
+                    .setInterpolator(new DecelerateInterpolator())
+                    .start();
+
+            cover.animate()
+                    .alpha(0f)
+                    .setDuration(500)
+                    .withEndAction(() -> cover.setVisibility(View.GONE))
+                    .start();
+        }
+
+        private void fallbackToImage() {
+
+            stopPlayer();
+
+            textureView.setAlpha(0f);
+
+            cover.animate().cancel();
+            cover.setAlpha(1f);
+            cover.setVisibility(View.VISIBLE);
+
+            shown = false;
+        }
+
+        /** Center-crop the video inside the TextureView (no stretching). */
+        private void applyCenterCrop() {
+
+            int viewW = textureView.getWidth();
+            int viewH = textureView.getHeight();
+
+            if (viewW == 0 || viewH == 0
+                    || videoWidth == 0 || videoHeight == 0) {
+                return;
+            }
+
+            float viewAspect = (float) viewW / viewH;
+            float videoAspect = (float) videoWidth / videoHeight;
+
+            float scaleX = 1f;
+            float scaleY = 1f;
+
+            if (videoAspect > viewAspect) {
+                scaleX = videoAspect / viewAspect;
+            } else {
+                scaleY = viewAspect / videoAspect;
+            }
+
+            Matrix matrix = new Matrix();
+            matrix.setScale(scaleX, scaleY, viewW / 2f, viewH / 2f);
+
+            textureView.setTransform(matrix);
+        }
+
+        private void stopPlayer() {
+
+            MediaPlayer mp = player;
+
+            player = null;
+
+            if (mp != null) {
+                try { mp.setOnErrorListener(null); } catch (Exception ignored) { }
+                try { mp.setOnInfoListener(null); } catch (Exception ignored) { }
+                try { mp.stop(); } catch (Exception ignored) { }
+                try { mp.release(); } catch (Exception ignored) { }
+            }
+
+            if (surface != null) {
+                try { surface.release(); } catch (Exception ignored) { }
+                surface = null;
+            }
+        }
+
+        void release() {
+
+            released = true;
+
+            stopPlayer();
+        }
+
+        // ---- TextureView.SurfaceTextureListener ----
+
+        @Override
+        public void onSurfaceTextureAvailable(
+                SurfaceTexture st, int width, int height
+        ) {
+            tryPlay();
+        }
+
+        @Override
+        public void onSurfaceTextureSizeChanged(
+                SurfaceTexture st, int width, int height
+        ) {
+            applyCenterCrop();
+        }
+
+        @Override
+        public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
+            // App went to background / dialog closing. Free the player;
+            // it restarts automatically if the surface comes back.
+            stopPlayer();
+            return true;
+        }
+
+        @Override
+        public void onSurfaceTextureUpdated(SurfaceTexture st) {
+
+            if (!shown && player != null) {
+                showVideo();
+            }
+        }
     }
 
     // =========================================================

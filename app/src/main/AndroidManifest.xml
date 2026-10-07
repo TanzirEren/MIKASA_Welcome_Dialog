@@ -3,6 +3,7 @@
 
     <application
         android:allowBackup="false"
+        android:hardwareAccelerated="true"
         android:icon="@drawable/app_icon"
         android:label="MODMASE"
         android:roundIcon="@drawable/app_icon"
