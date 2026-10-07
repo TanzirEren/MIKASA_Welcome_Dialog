@@ -21,6 +21,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -32,12 +33,22 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Debug APK
+      - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
 
-      - name: Upload APK
+      - name: Verify single DEX
+        shell: bash
+        run: |
+          set -e
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          COUNT=$(unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\\.dex$' | wc -l)
+          echo "DEX files: $COUNT"
+          unzip -Z1 "$APK" | grep -E '^classes([0-9]+)?\\.dex$' || true
+          test "$COUNT" -eq 1
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: MODMASE-MIKASA-Debug-APK
+          name: MODMASE-MIKASA-v3-Debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
