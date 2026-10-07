@@ -21,6 +21,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.VideoView;
 
 import java.io.InputStream;
 
@@ -87,11 +88,16 @@ public final class MIKASA {
         cardParams.gravity = Gravity.CENTER;
         root.addView(card, cardParams);
 
-        // ----- Image + accent line -----
+        // ----- Welcome media (video) + fallback image + accent line -----
         FrameLayout imageFrame = new FrameLayout(activity);
         imageFrame.setBackgroundColor(Color.rgb(37, 33, 31));
 
-        final AspectImageView imageView = new AspectImageView(activity);
+        final VideoView videoView = new VideoView(activity);
+        videoView.setBackgroundColor(Color.rgb(37, 33, 31));
+        videoView.setZOrderOnTop(false);
+        videoView.setVisibility(View.GONE);
+
+        final ImageView imageView = new ImageView(activity);
         imageView.setScaleType(ImageView.ScaleType.CENTER_CROP);
         imageView.setImageResource(android.R.color.transparent);
 
@@ -99,14 +105,43 @@ public final class MIKASA {
             android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeStream(input);
             imageView.setImageBitmap(bitmap);
         } catch (Exception ignored) {
-            // Keep the image area instead of crashing the app.
+            // Keep the media area instead of crashing the app.
         }
 
         FrameLayout.LayoutParams imageParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
+                ViewGroup.LayoutParams.MATCH_PARENT
         );
         imageFrame.addView(imageView, imageParams);
+
+        FrameLayout.LayoutParams videoParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        );
+        imageFrame.addView(videoView, videoParams);
+
+        try {
+            activity.getAssets().open("wlc_video.mp4").close();
+            videoView.setVideoURI(Uri.parse("file:///android_asset/wlc_video.mp4"));
+            videoView.setOnPreparedListener(mp -> {
+                try {
+                    mp.setVolume(0f, 0f);
+                    mp.setLooping(true);
+                } catch (Exception ignored) {
+                }
+                imageView.setVisibility(View.GONE);
+                videoView.setVisibility(View.VISIBLE);
+                videoView.start();
+            });
+            videoView.setOnCompletionListener(mp -> videoView.start());
+            videoView.setOnErrorListener((mp, what, extra) -> {
+                videoView.setVisibility(View.GONE);
+                imageView.setVisibility(View.VISIBLE);
+                return true;
+            });
+        } catch (Exception ignored) {
+            // If wlc_video.mp4 is not supplied, the bundled mikasa.png is shown.
+        }
 
         View accent = new View(activity);
         accent.setBackground(rounded(activity, RED, 4, 0, Color.TRANSPARENT));
@@ -265,13 +300,10 @@ public final class MIKASA {
             window.setLayout(width, WindowManager.LayoutParams.WRAP_CONTENT);
 
             // Exact 1200:675 image ratio.
-            imageView.post(() -> {
+            imageFrame.post(() -> {
                 int w = imageFrame.getWidth();
                 if (w > 0) {
                     int h = Math.round(w * ((float) IMAGE_HEIGHT / IMAGE_WIDTH));
-                    ViewGroup.LayoutParams lp2 = imageView.getLayoutParams();
-                    lp2.height = h;
-                    imageView.setLayoutParams(lp2);
                     ViewGroup.LayoutParams fp = imageFrame.getLayoutParams();
                     fp.height = h;
                     imageFrame.setLayoutParams(fp);
@@ -296,6 +328,17 @@ public final class MIKASA {
             imageView.setScaleX(1.07f);
             imageView.setScaleY(1.07f);
             imageView.animate()
+                    .alpha(1f)
+                    .scaleX(1.02f)
+                    .scaleY(1.02f)
+                    .setDuration(900)
+                    .setInterpolator(new DecelerateInterpolator(1.5f))
+                    .start();
+
+            videoView.setAlpha(0f);
+            videoView.setScaleX(1.07f);
+            videoView.setScaleY(1.07f);
+            videoView.animate()
                     .alpha(1f)
                     .scaleX(1.02f)
                     .scaleY(1.02f)
